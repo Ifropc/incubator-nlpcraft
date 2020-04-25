@@ -31,31 +31,35 @@ import org.apache.nlpcraft.common.makro.NCMacroParser
 import org.apache.nlpcraft.common.nlp.core.NCNlpPorterStemmer
 import org.apache.nlpcraft.model.NCModelFileAdapter
 
+import scala.collection._
 import scala.collection.JavaConverters._
 
-object NCSynonymsGenerator extends App {
+case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double) {
     // TODO: all string fields
-    case class Holder(word: String, bert: String, normalized: String, ftext: String, score: String) {
+    // normalized  - normalized bert value.
+    // score = normalized * weight + ftext * weight
+    // both `weights` = 1
+    case class Suggestion(word: String, bert: String, normalized: String, ftext: String, score: String) {
         override def toString: String = s"$word [bert=$bert, ftext=$ftext, normalized=$normalized, score=$score]"
     }
+
     case class Request(sentence: String, simple: Boolean)
-    case class Response(data: java.util.ArrayList[Holder])
+
+    case class Response(data: java.util.ArrayList[Suggestion])
 
     private val GSON = new Gson
     private val TYPE_RESP: Type = new TypeToken[Response]() {}.getType
 
     private def split(s: String): Seq[String] = s.split(" ").toSeq.map(_.trim).filter(_.nonEmpty)
 
-    private def ask(client: CloseableHttpClient, url: String, words: Seq[String], idx: Int, minFactor: Double): Seq[Holder]= {
-        val sen = words.zipWithIndex.map { case (word, wordIdx) ⇒ if (wordIdx == idx) s"$word#" else word }.mkString(" ")
-
+    private def ask(client: CloseableHttpClient, sen: String): Seq[Suggestion] = {
         val post = new HttpPost(url)
 
         post.setHeader("Content-Type", "application/json")
         post.setEntity(new StringEntity(GSON.toJson(Request(sen, simple = false)), "UTF-8"))
 
-        val h = new ResponseHandler[Seq[Holder]]() {
-            override def handleResponse(resp: HttpResponse): Seq[Holder] = {
+        val h = new ResponseHandler[Seq[Suggestion]]() {
+            override def handleResponse(resp: HttpResponse): Seq[Suggestion] = {
                 val code = resp.getStatusLine.getStatusCode
                 val e = resp.getEntity
 
@@ -66,7 +70,6 @@ object NCSynonymsGenerator extends App {
 
                 code match {
                     case 200 ⇒
-                        // TODO: add filter by minFactor.
                         val data: Response = GSON.fromJson(js, TYPE_RESP)
 
                         data.data.asScala
@@ -83,65 +86,109 @@ object NCSynonymsGenerator extends App {
             post.releaseConnection()
     }
 
-    private def process(mdlPath: String, url: String): Unit = {
-        val mdl = new NCModelFileAdapter(mdlPath) {
-            // No-op.
-        }
+    def process(): Unit = {
+        val mdl = new NCModelFileAdapter(modelPath) {}
 
         val parser = new NCMacroParser()
 
         if (mdl.getMacros != null)
             mdl.getMacros.asScala.foreach { case (name, str) ⇒ parser.addMacro(name, str) }
 
-        val table = NCAsciiTable()
-        val client: CloseableHttpClient = HttpClients.createDefault
+        val client = HttpClients.createDefault
 
-        table #= ("Single synonym", "Suggestions")
+        case class Word(word: String) {
+            val stem: String = NCNlpPorterStemmer.stem(word)
+        }
 
-        val examples: Set[(Seq[String], Seq[String])] =
+        val examples: Seq[Seq[Word]] =
             mdl.getExamples.asScala.
                 // TODO: Is it enough?
-                map(_.replaceAll("\\?", "")).
-                map(_.replaceAll("\\.", "")).
-                map(_.replaceAll("!", "")).
-                map(split).map(p ⇒ p → p.map(NCNlpPorterStemmer.stem)).toSet
+                map(_.replaceAll("\\?", " ?")).
+                map(_.replaceAll("\\.", " .")).
+                map(_.replaceAll(",", " ,")).
+                map(_.replaceAll("!", " !")).
+                map(split).
+                map(_.map(Word)).
+                toSeq
 
-        val suggestions =
-            mdl.getElements.asScala.flatMap(e ⇒ {
-                val elemSyns = e.getSynonyms.asScala.flatMap(p ⇒ parser.expand(p)).map(s ⇒ s → split(s)).toMap
+        val elemSyns = mdl.getElements.asScala.map(e ⇒ e.getId → e.getSynonyms.asScala.flatMap(parser.expand)).toMap
 
-                elemSyns.filter(_._2.length == 1).
-                    map(_._2.head).
-                    map(p ⇒ p → NCNlpPorterStemmer.stem(p)).
-                    flatMap { case (syn, synStem) ⇒
-                        val suggestions: Set[Holder] =
-                            examples.filter(_._2.contains(synStem)).flatMap { case (eWords, eStems) ⇒
-                                val idx = eStems.indexOf(synStem)
+        val cache = mutable.HashMap.empty[String, Seq[Suggestion]]
 
-                                require(idx >= 0)
+        val allSuggs =
+            elemSyns.map {
+                case (elemId, elemSyns) ⇒
+                    val stemsSyns: Seq[(String, String)] =
+                        elemSyns.
+                            map(text ⇒ text → split(text).map(Word)).
+                            filter { case( _, words) ⇒ words.size == 1 }.
+                            map { case(text, words) ⇒ words.head.stem → text }
 
-                                ask(client, url, eWords, idx, 0.0)
-                            }.filter(p ⇒ !elemSyns.contains(p.word))
+                    val hs: Seq[Suggestion] =
+                        examples.flatMap(exWords ⇒ {
+                            val exStems = exWords.map(_.stem)
 
-                        if (suggestions.nonEmpty) Some(syn → suggestions) else None
-                    }.toMap
-            }).toMap
+                            val idxs =
+                                exStems.flatMap(stem ⇒
+                                    stemsSyns.find(_._1 == stem) match {
+                                        case Some(p) ⇒ Some(exStems.indexOf(p._1))
+                                        case None ⇒ None
+                                    }
+                                )
 
-        val n = suggestions.size
+                            if (idxs.nonEmpty)
+                                stemsSyns.map(_._2).flatMap(syn ⇒ {
+                                    val wordsTxt =
+                                        exWords.zipWithIndex.map { case (word, idx) ⇒ if (idxs.contains(idx)) syn else word.word }
 
-        suggestions.zipWithIndex.map { case ((syn, hs), idx) ⇒
-            // TODO: sort
-            hs.toSeq.sortBy(_.score.toDouble).reverse.foreach(h ⇒ table += (syn, h))
+                                    idxs.flatMap(idx ⇒ {
+                                        val sen =
+                                            wordsTxt.zipWithIndex.map {
+                                                case (word, wordIdx) ⇒ if (wordIdx == idx) s"$word#" else word
+                                            }.mkString(" ")
 
-            if (idx != n - 1)
-                table += ("-------", "-------")
+                                        cache.get(sen) match {
+                                            case Some(res) ⇒ res
+                                            case None ⇒
+                                                val res: Seq[Suggestion] = ask(client, sen).filter(_.score.toDouble >= minFactor)
+
+                                                cache += sen → res
+
+                                                res
+                                        }
+                                    })
+                                })
+                            else
+                                Seq.empty
+                        })
+
+                    elemId → hs
+            }.filter(_._2.nonEmpty)
+
+        val allSyns = elemSyns.flatMap(_._2).toSet
+
+        val table = NCAsciiTable()
+
+        table #= ("Element", "Suggestions")
+
+        allSuggs.foreach { case (elemId, elemSuggs) ⇒
+            elemSuggs.
+                groupBy(_.word).
+                map { case (_, group) ⇒ group.sortBy(_.score.toDouble).reverse.head }. // Drops repeated.
+                toSeq.sortBy(_.score.toDouble).reverse.
+                filter(p ⇒ !allSyns.contains(p.word)). // TODO: drop by stem, not by word as is
+                zipWithIndex.
+                foreach { case (sugg, sugIdx) ⇒ table += (if (sugIdx == 0) elemId else " ", sugg) }
         }
 
         table.render()
     }
+}
 
-    process(
-        "src/main/scala/org/apache/nlpcraft/examples/weather/weather_model.json",
-        "http://localhost:5000"
-    )
+object NCSynonymsGeneratorRunner extends App {
+    NCSynonymsGenerator(
+        url = "http://localhost:5000",
+        modelPath = "src/main/scala/org/apache/nlpcraft/examples/weather/weather_model.json",
+        minFactor = 0
+    ).process()
 }
