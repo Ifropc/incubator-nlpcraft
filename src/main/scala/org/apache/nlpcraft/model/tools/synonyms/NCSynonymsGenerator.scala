@@ -111,7 +111,11 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
 
         val elemSyns = mdl.getElements.asScala.map(e ⇒ e.getId → e.getSynonyms.asScala.flatMap(parser.expand)).toMap
 
-        val cache = mutable.HashMap.empty[String, Seq[Suggestion]]
+        val cache = mutable.HashMap.empty[String, Seq[Suggestion]].withDefault(
+            new (String ⇒ Seq[Suggestion]) {
+                override def apply(sen: String): Seq[Suggestion] = ask(client, sen).filter(_.score.toDouble >= minFactor)
+            }
+        )
 
         val allSuggs =
             elemSyns.map {
@@ -135,29 +139,15 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
                                 )
 
                             if (idxs.nonEmpty)
-                                stemsSyns.map(_._2).flatMap(syn ⇒ {
-                                    val wordsTxt =
-                                        exWords.zipWithIndex.map {
-                                            case (word, idx) ⇒ if (idxs.contains(idx)) syn else word.word
-                                        }
-
-                                    idxs.flatMap(idx ⇒ {
-                                        val sen =
-                                            wordsTxt.zipWithIndex.map {
-                                                case (word, wordIdx) ⇒ if (wordIdx == idx) s"$word#" else word
-                                            }.mkString(" ")
-
-                                        cache.get(sen) match {
-                                            case Some(res) ⇒ res
-                                            case None ⇒
-                                                val res = ask(client, sen).filter(_.score.toDouble >= minFactor)
-
-                                                cache += sen → res
-
-                                                res
-                                        }
-                                    })
-                                })
+                                stemsSyns.map(_._2).flatMap(syn ⇒
+                                    idxs.flatMap(idx ⇒
+                                        cache(
+                                            exWords.
+                                            zipWithIndex.map { case (w, i1) ⇒ if (idxs.contains(i1)) syn else w.word }.
+                                            zipWithIndex.map { case (w, i2) ⇒ if (i2 == idx) s"$w#" else w}.
+                                            mkString(" "))
+                                    )
+                                )
                             else
                                 Seq.empty
                         })
