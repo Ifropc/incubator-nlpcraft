@@ -39,47 +39,49 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
     // normalized  - normalized bert value.
     // score = normalized * weight + ftext * weight
     // both `weights` = 1
-    case class Suggestion(word: String, bert: String, normalized: String, ftext: String, score: String) {
-        override def toString: String = s"$word [bert=$bert, ftext=$ftext, normalized=$normalized, score=$score]"
-    }
+    case class Suggestion(word: String, bert: String, normalized: String, ftext: String, score: String)
     case class Request(sentence: String, simple: Boolean)
     case class Response(data: java.util.ArrayList[Suggestion])
 
     private val GSON = new Gson
     private val TYPE_RESP: Type = new TypeToken[Response]() {}.getType
+    private val SEPARATORS = Seq('?', ',', '.', '-', '!')
+
+    private val HANDLER = new ResponseHandler[Seq[Suggestion]]() {
+        override def handleResponse(resp: HttpResponse): Seq[Suggestion] = {
+            val code = resp.getStatusLine.getStatusCode
+            val e = resp.getEntity
+
+            val js = if (e != null) EntityUtils.toString(e) else null
+
+            if (js == null)
+                throw new RuntimeException(s"Unexpected empty response [code=$code]")
+
+            code match {
+                case 200 ⇒
+                    val data: Response = GSON.fromJson(js, TYPE_RESP)
+
+                    data.data.asScala
+
+                case 400 ⇒ throw new RuntimeException(js)
+                case _ ⇒ throw new RuntimeException(s"Unexpected response [code=$code, text=$js]")
+            }
+        }
+    }
 
     private def split(s: String): Seq[String] = s.split(" ").toSeq.map(_.trim).filter(_.nonEmpty)
 
+    private def toStem(s: String): String = split(s).map(NCNlpPorterStemmer.stem).mkString(" ")
+
+    // TODO: multithreading.
     private def ask(client: CloseableHttpClient, sen: String): Seq[Suggestion] = {
         val post = new HttpPost(url)
 
         post.setHeader("Content-Type", "application/json")
         post.setEntity(new StringEntity(GSON.toJson(Request(sen, simple = false)), "UTF-8"))
 
-        val h = new ResponseHandler[Seq[Suggestion]]() {
-            override def handleResponse(resp: HttpResponse): Seq[Suggestion] = {
-                val code = resp.getStatusLine.getStatusCode
-                val e = resp.getEntity
-
-                val js = if (e != null) EntityUtils.toString(e) else null
-
-                if (js == null)
-                    throw new RuntimeException(s"Unexpected empty response [code=$code]")
-
-                code match {
-                    case 200 ⇒
-                        val data: Response = GSON.fromJson(js, TYPE_RESP)
-
-                        data.data.asScala
-
-                    case 400 ⇒ throw new RuntimeException(js)
-                    case _ ⇒ throw new RuntimeException(s"Unexpected response [code=$code, text=$js]")
-                }
-            }
-        }
-
         try
-            client.execute(post, h)
+            client.execute(post, HANDLER)
         finally
             post.releaseConnection()
     }
@@ -95,21 +97,22 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
         val client = HttpClients.createDefault
 
         case class Word(word: String) {
+            require(!word.contains(" "), s"Word cannot contains spaces: $word")
+            require(word.forall(ch ⇒ ch.isLetterOrDigit || ch == ''' || SEPARATORS.contains(ch)), s"Unsupported symbols: $word")
+
             val stem: String = NCNlpPorterStemmer.stem(word)
         }
 
-        val examples: Seq[Seq[Word]] =
+        val examples =
             mdl.getExamples.asScala.
-                // TODO: Is it enough?
-                map(_.replaceAll("\\?", " ?")).
-                map(_.replaceAll("\\.", " .")).
-                map(_.replaceAll(",", " ,")).
-                map(_.replaceAll("!", " !")).
+                map(s ⇒ SEPARATORS.foldLeft(s)((s, ch) ⇒ s.replaceAll(s"\\$ch", s" $ch "))).
                 map(split).
                 map(_.map(Word)).
                 toSeq
 
-        val elemSyns = mdl.getElements.asScala.map(e ⇒ e.getId → e.getSynonyms.asScala.flatMap(parser.expand)).toMap
+        val elemSyns =
+            mdl.getElements.asScala.map(e ⇒ e.getId → e.getSynonyms.asScala.flatMap(parser.expand)).
+                map { case (id, seq) ⇒ id → seq.map(txt ⇒ split(txt).map(Word))}.toMap
 
         val cache = mutable.HashMap.empty[String, Seq[Suggestion]].withDefault(
             new (String ⇒ Seq[Suggestion]) {
@@ -121,10 +124,7 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
             elemSyns.map {
                 case (elemId, elemSyns) ⇒
                     val stemsSyns: Seq[(String, String)] =
-                        elemSyns.
-                            map(text ⇒ text → split(text).map(Word)).
-                            filter { case( _, words) ⇒ words.size == 1 }.
-                            map { case(text, words) ⇒ words.head.stem → text }
+                        elemSyns.filter(_.size == 1).map(words ⇒ words.head.stem → words.head.word)
 
                     val hs: Seq[Suggestion] =
                         examples.flatMap(exWords ⇒ {
@@ -144,7 +144,7 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
                                         cache(
                                             exWords.
                                             zipWithIndex.map { case (w, i1) ⇒ if (idxs.contains(i1)) syn else w.word }.
-                                            zipWithIndex.map { case (w, i2) ⇒ if (i2 == idx) s"$w#" else w}.
+                                            zipWithIndex.map { case (s, i2) ⇒ if (i2 == idx) s"$s#" else s}.
                                             mkString(" "))
                                     )
                                 )
@@ -155,7 +155,7 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
                     elemId → hs
             }.filter(_._2.nonEmpty)
 
-        val allSyns = elemSyns.flatMap(_._2).toSet
+        val allSynsStems = elemSyns.flatMap(_._2).flatten.map(_.stem).toSet
 
         val table = NCAsciiTable()
 
@@ -163,12 +163,30 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
 
         allSuggs.foreach { case (elemId, elemSuggs) ⇒
             elemSuggs.
-                groupBy(_.word).
-                map { case (_, group) ⇒ group.sortBy(_.score.toDouble).reverse.head }. // Drops repeated.
-                toSeq.sortBy(_.score.toDouble).reverse.
-                filter(p ⇒ !allSyns.contains(p.word)). // TODO: drop by stem, not by word as is
+                map(sugg ⇒ (sugg, toStem(sugg.word))).
+                groupBy { case (_, stem) ⇒ stem }.
+                filter { case (stem, _) ⇒ !allSynsStems.contains(stem) }.
+                map { case (_, group) ⇒
+                    val seq = group.map { case (sugg, _) ⇒ sugg }.sortBy(-_.score.toDouble)
+
+                    // Drops repeated.
+                    (seq.head, seq.length)
+                }.
+                // TODO: develop more intelligent sorting.
+                toSeq.sortBy { case (sugg, cnt) ⇒ (-cnt , -sugg.score.toDouble) }.
                 zipWithIndex.
-                foreach { case (sugg, sugIdx) ⇒ table += (if (sugIdx == 0) elemId else " ", sugg) }
+                foreach { case ((sugg, cnt), sugIdx) ⇒
+                    table += (
+                        if (sugIdx == 0) elemId else " ",
+                        s"${sugg.word} " +
+                            s"[count=$cnt, " +
+                            s"bert=${sugg.bert}, " +
+                            s"ftext=${sugg.ftext}, " +
+                            s"norm=${sugg.normalized}, " +
+                            s"score=${sugg.score}" +
+                            s"]"
+                    )
+                }
         }
 
         table.render()
