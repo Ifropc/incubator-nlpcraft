@@ -42,9 +42,7 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
     case class Suggestion(word: String, bert: String, normalized: String, ftext: String, score: String) {
         override def toString: String = s"$word [bert=$bert, ftext=$ftext, normalized=$normalized, score=$score]"
     }
-
     case class Request(sentence: String, simple: Boolean)
-
     case class Response(data: java.util.ArrayList[Suggestion])
 
     private val GSON = new Gson
@@ -139,7 +137,9 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
                             if (idxs.nonEmpty)
                                 stemsSyns.map(_._2).flatMap(syn ⇒ {
                                     val wordsTxt =
-                                        exWords.zipWithIndex.map { case (word, idx) ⇒ if (idxs.contains(idx)) syn else word.word }
+                                        exWords.zipWithIndex.map {
+                                            case (word, idx) ⇒ if (idxs.contains(idx)) syn else word.word
+                                        }
 
                                     idxs.flatMap(idx ⇒ {
                                         val sen =
@@ -150,7 +150,7 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
                                         cache.get(sen) match {
                                             case Some(res) ⇒ res
                                             case None ⇒
-                                                val res: Seq[Suggestion] = ask(client, sen).filter(_.score.toDouble >= minFactor)
+                                                val res = ask(client, sen).filter(_.score.toDouble >= minFactor)
 
                                                 cache += sen → res
 
