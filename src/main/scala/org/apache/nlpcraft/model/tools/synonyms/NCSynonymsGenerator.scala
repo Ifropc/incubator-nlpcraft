@@ -17,8 +17,7 @@
 package org.apache.nlpcraft.model.tools.synonyms
 
 import java.lang.reflect.Type
-import java.util
-import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.{CopyOnWriteArrayList, CountDownLatch, TimeUnit}
 
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -34,8 +33,8 @@ import org.apache.nlpcraft.common.nlp.core.NCNlpPorterStemmer
 import org.apache.nlpcraft.common.util.NCUtils
 import org.apache.nlpcraft.model.NCModelFileAdapter
 
-import scala.collection._
 import scala.collection.JavaConverters._
+import scala.collection._
 
 case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double) {
     // TODO: all string fields
@@ -77,7 +76,6 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
     private def toStem(s: String): String = split(s).map(NCNlpPorterStemmer.stem).mkString(" ")
     private def toStemWord(s: String): String = NCNlpPorterStemmer.stem(s)
 
-    // TODO: multithreading.
     private def ask(client: CloseableHttpClient, sen: String): Seq[Suggestion] = {
         val post = new HttpPost(url)
 
@@ -105,7 +103,7 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
             require(
                 word.forall(ch ⇒
                     ch.isLetterOrDigit ||
-                    ch == ''' ||
+                    ch == '\'' ||
                     SEPARATORS.contains(ch)
                 ),
                 s"Unsupported symbols: $word"
@@ -151,39 +149,22 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
                     elemId → hs
             }.filter(_._2.nonEmpty)
 
-//        val cache = mutable.HashMap.empty[String, Seq[Suggestion]].withDefault(
-//            new (String ⇒ Seq[Suggestion]) {
-//                override def apply(sen: String): Seq[Suggestion] = ask(client, sen).filter(_.score.toDouble >= minFactor)
-//            }
-//        )
-
         val cache = new java.util.concurrent.ConcurrentHashMap[String, Seq[Suggestion]] ()
-
         val allSuggs = new java.util.concurrent.ConcurrentHashMap[String, java.util.List[Suggestion]] ()
 
-        for ((elemId, sens) <- allSens; sen <- sens) {
+        val cdl = new CountDownLatch(allSens.map { case (_, seq) ⇒ seq.size }.sum)
+
+        for ((elemId, sens) ← allSens; sen ← sens)
             NCUtils.asFuture(
-                () ⇒ {
-                    val senSuggs: Seq[Suggestion] = cache.computeIfAbsent(
-                        sen,
-                        new Function[String, Seq[Suggestion]]() {
-                            override def apply(v1: String): Seq[Suggestion] = ask(client, sen)
-                        }
-                    )
-
-                    val elemSugs: util.List[Suggestion] = allSuggs.computeIfAbsent(
-                        elemId,
-                        new Function[String, util.List[Suggestion]]() {
-                            override def apply(v1: String): util.List[Suggestion] = new CopyOnWriteArrayList[Suggestion]()
-                        }
-                    )
-
-                    elemSugs.addAll(senSuggs)
+                _ ⇒ {
+                    allSuggs.computeIfAbsent(elemId, (_: String) ⇒ new CopyOnWriteArrayList[Suggestion]()).
+                        addAll(cache.computeIfAbsent(sen, (_: String) ⇒ ask(client, sen)).asJava)
                 },
-                (t: Throwable) ⇒ (),
-                (t: Throwable) ⇒ ()
+                (_: Throwable) ⇒ cdl.countDown(),
+                (_: Boolean) ⇒ cdl.countDown()
             )
-        }
+
+        cdl.await(Long.MaxValue, TimeUnit.MILLISECONDS)
 
         val allSynsStems = elemSyns.flatMap(_._2).flatten.map(_.stem).toSet
 
