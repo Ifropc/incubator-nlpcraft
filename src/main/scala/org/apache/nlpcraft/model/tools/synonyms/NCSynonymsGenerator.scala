@@ -72,6 +72,7 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
     private def split(s: String): Seq[String] = s.split(" ").toSeq.map(_.trim).filter(_.nonEmpty)
 
     private def toStem(s: String): String = split(s).map(NCNlpPorterStemmer.stem).mkString(" ")
+    private def toStemWord(s: String): String = NCNlpPorterStemmer.stem(s)
 
     // TODO: multithreading.
     private def ask(client: CloseableHttpClient, sen: String): Seq[Suggestion] = {
@@ -96,23 +97,28 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
 
         val client = HttpClients.createDefault
 
-        case class Word(word: String) {
+        case class Word(word: String, stem: String) {
             require(!word.contains(" "), s"Word cannot contains spaces: $word")
-            require(word.forall(ch ⇒ ch.isLetterOrDigit || ch == ''' || SEPARATORS.contains(ch)), s"Unsupported symbols: $word")
-
-            val stem: String = NCNlpPorterStemmer.stem(word)
+            require(
+                word.forall(ch ⇒
+                    ch.isLetterOrDigit ||
+                    ch == ''' ||
+                    SEPARATORS.contains(ch)
+                ),
+                s"Unsupported symbols: $word"
+            )
         }
 
         val examples =
             mdl.getExamples.asScala.
                 map(s ⇒ SEPARATORS.foldLeft(s)((s, ch) ⇒ s.replaceAll(s"\\$ch", s" $ch "))).
                 map(split).
-                map(_.map(Word)).
+                map(_.map(p ⇒ Word(p, toStemWord(p)))).
                 toSeq
 
         val elemSyns =
             mdl.getElements.asScala.map(e ⇒ e.getId → e.getSynonyms.asScala.flatMap(parser.expand)).
-                map { case (id, seq) ⇒ id → seq.map(txt ⇒ split(txt).map(Word))}.toMap
+                map { case (id, seq) ⇒ id → seq.map(txt ⇒ split(txt).map(p ⇒ Word(p, toStemWord(p))))}.toMap
 
         val cache = mutable.HashMap.empty[String, Seq[Suggestion]].withDefault(
             new (String ⇒ Seq[Suggestion]) {
@@ -123,26 +129,19 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
         val allSuggs =
             elemSyns.map {
                 case (elemId, elemSyns) ⇒
-                    val stemsSyns: Seq[(String, String)] =
-                        elemSyns.filter(_.size == 1).map(words ⇒ words.head.stem → words.head.word)
+                    val elemSingleSyns = elemSyns.filter(_.size == 1).map(_.head)
+                    val elemStems = elemSingleSyns.map(_.stem)
 
                     val hs: Seq[Suggestion] =
-                        examples.flatMap(exWords ⇒ {
-                            val exStems = exWords.map(_.stem)
-
-                            val idxs =
-                                exStems.flatMap(stem ⇒
-                                    stemsSyns.find(_._1 == stem) match {
-                                        case Some(p) ⇒ Some(exStems.indexOf(p._1))
-                                        case None ⇒ None
-                                    }
-                                )
+                        examples.flatMap(example ⇒ {
+                            val exStems = example.map(_.stem)
+                            val idxs = exStems.flatMap(s ⇒ if (elemStems.contains(s)) Some(exStems.indexOf(s)) else None)
 
                             if (idxs.nonEmpty)
-                                stemsSyns.map(_._2).flatMap(syn ⇒
+                                elemSingleSyns.map(_.word).flatMap(syn ⇒
                                     idxs.flatMap(idx ⇒
                                         cache(
-                                            exWords.
+                                            example.
                                             zipWithIndex.map { case (w, i1) ⇒ if (idxs.contains(i1)) syn else w.word }.
                                             zipWithIndex.map { case (s, i2) ⇒ if (i2 == idx) s"$s#" else s}.
                                             mkString(" "))
