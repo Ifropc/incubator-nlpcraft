@@ -17,6 +17,8 @@
 package org.apache.nlpcraft.model.tools.synonyms
 
 import java.lang.reflect.Type
+import java.util
+import java.util.concurrent.CopyOnWriteArrayList
 
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -29,6 +31,7 @@ import org.apache.http.util.EntityUtils
 import org.apache.nlpcraft.common.ascii.NCAsciiTable
 import org.apache.nlpcraft.common.makro.NCMacroParser
 import org.apache.nlpcraft.common.nlp.core.NCNlpPorterStemmer
+import org.apache.nlpcraft.common.util.NCUtils
 import org.apache.nlpcraft.model.NCModelFileAdapter
 
 import scala.collection._
@@ -120,31 +123,25 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
             mdl.getElements.asScala.map(e ⇒ e.getId → e.getSynonyms.asScala.flatMap(parser.expand)).
                 map { case (id, seq) ⇒ id → seq.map(txt ⇒ split(txt).map(p ⇒ Word(p, toStemWord(p))))}.toMap
 
-        val cache = mutable.HashMap.empty[String, Seq[Suggestion]].withDefault(
-            new (String ⇒ Seq[Suggestion]) {
-                override def apply(sen: String): Seq[Suggestion] = ask(client, sen).filter(_.score.toDouble >= minFactor)
-            }
-        )
 
-        val allSuggs =
+        val allSens: Map[String, Seq[String]] =
             elemSyns.map {
                 case (elemId, elemSyns) ⇒
                     val elemSingleSyns = elemSyns.filter(_.size == 1).map(_.head)
                     val elemStems = elemSingleSyns.map(_.stem)
 
-                    val hs: Seq[Suggestion] =
+                    val hs =
                         examples.flatMap(example ⇒ {
                             val exStems = example.map(_.stem)
                             val idxs = exStems.flatMap(s ⇒ if (elemStems.contains(s)) Some(exStems.indexOf(s)) else None)
 
                             if (idxs.nonEmpty)
                                 elemSingleSyns.map(_.word).flatMap(syn ⇒
-                                    idxs.flatMap(idx ⇒
-                                        cache(
-                                            example.
-                                            zipWithIndex.map { case (w, i1) ⇒ if (idxs.contains(i1)) syn else w.word }.
-                                            zipWithIndex.map { case (s, i2) ⇒ if (i2 == idx) s"$s#" else s}.
-                                            mkString(" "))
+                                    idxs.map(idx ⇒
+                                        example.
+                                        zipWithIndex.map { case (w, i1) ⇒ if (idxs.contains(i1)) syn else w.word }.
+                                        zipWithIndex.map { case (s, i2) ⇒ if (i2 == idx) s"$s#" else s}.
+                                        mkString(" ")
                                     )
                                 )
                             else
@@ -154,13 +151,47 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
                     elemId → hs
             }.filter(_._2.nonEmpty)
 
+//        val cache = mutable.HashMap.empty[String, Seq[Suggestion]].withDefault(
+//            new (String ⇒ Seq[Suggestion]) {
+//                override def apply(sen: String): Seq[Suggestion] = ask(client, sen).filter(_.score.toDouble >= minFactor)
+//            }
+//        )
+
+        val cache = new java.util.concurrent.ConcurrentHashMap[String, Seq[Suggestion]] ()
+
+        val allSuggs = new java.util.concurrent.ConcurrentHashMap[String, java.util.List[Suggestion]] ()
+
+        for ((elemId, sens) <- allSens; sen <- sens) {
+            NCUtils.asFuture(
+                () ⇒ {
+                    val senSuggs: Seq[Suggestion] = cache.computeIfAbsent(
+                        sen,
+                        new Function[String, Seq[Suggestion]]() {
+                            override def apply(v1: String): Seq[Suggestion] = ask(client, sen)
+                        }
+                    )
+
+                    val elemSugs: util.List[Suggestion] = allSuggs.computeIfAbsent(
+                        elemId,
+                        new Function[String, util.List[Suggestion]]() {
+                            override def apply(v1: String): util.List[Suggestion] = new CopyOnWriteArrayList[Suggestion]()
+                        }
+                    )
+
+                    elemSugs.addAll(senSuggs)
+                },
+                (t: Throwable) ⇒ (),
+                (t: Throwable) ⇒ ()
+            )
+        }
+
         val allSynsStems = elemSyns.flatMap(_._2).flatten.map(_.stem).toSet
 
         val table = NCAsciiTable()
 
         table #= ("Element", "Suggestions")
 
-        allSuggs.foreach { case (elemId, elemSuggs) ⇒
+        allSuggs.asScala.map { case (id, elemSuggs) ⇒ id → elemSuggs.asScala}.foreach { case (elemId, elemSuggs) ⇒
             elemSuggs.
                 map(sugg ⇒ (sugg, toStem(sugg.word))).
                 groupBy { case (_, stem) ⇒ stem }.
