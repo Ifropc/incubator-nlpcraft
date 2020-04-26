@@ -160,7 +160,11 @@ case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double
                     allSuggs.computeIfAbsent(elemId, (_: String) ⇒ new CopyOnWriteArrayList[Suggestion]()).
                         addAll(cache.computeIfAbsent(sen, (_: String) ⇒ ask(client, sen)).asJava)
                 },
-                (_: Throwable) ⇒ cdl.countDown(),
+                (e: Throwable) ⇒ {
+                    e.printStackTrace()
+
+                    cdl.countDown()
+                },
                 (_: Boolean) ⇒ cdl.countDown()
             )
 
