@@ -16,7 +16,6 @@
  */
 package org.apache.nlpcraft.model.tools.synonyms
 
-import java.lang.reflect.Type
 import java.util.concurrent.{CopyOnWriteArrayList, CountDownLatch, TimeUnit}
 
 import com.google.gson.Gson
@@ -36,17 +35,30 @@ import org.apache.nlpcraft.model.NCModelFileAdapter
 import scala.collection.JavaConverters._
 import scala.collection._
 
+/**
+  * // TODO: all string fields
+  *
+  * TODO:
+  * @param url
+  * @param modelPath
+  * @param minFactor
+  */
 case class NCSynonymsGenerator(url: String, modelPath: String, minFactor: Double) {
-    // TODO: all string fields
-    // normalized  - normalized bert value.
-    // score = normalized * weight + ftext * weight
-    // both `weights` = 1
+    /**
+      * Suggestion data holder.
+      *
+      * @param word Word
+      * @param bert Bert factor.
+      * @param normalized Normalized bert factor.
+      * @param ftext FText factor.
+      * @param score Calculated summary factor: normalized * weight1 + ftext * weight2 (weights values are 1 currently)
+      */
     case class Suggestion(word: String, bert: String, normalized: String, ftext: String, score: String)
     case class Request(sentence: String, simple: Boolean)
     case class Response(data: java.util.ArrayList[Suggestion])
 
     private val GSON = new Gson
-    private val TYPE_RESP: Type = new TypeToken[Response]() {}.getType
+    private val TYPE_RESP = new TypeToken[Response]() {}.getType
     private val SEPARATORS = Seq('?', ',', '.', '-', '!')
 
     private val HANDLER = new ResponseHandler[Seq[Suggestion]]() {
