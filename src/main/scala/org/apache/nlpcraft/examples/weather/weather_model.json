@@ -23,7 +23,6 @@
     "examples": [
         "What's the local weather forecast?",
         "What's the weather in Moscow?",
-        "What's it like outside?",
         "What is the weather like outside?",
         "How's the weather?",
         "What's the weather forecast for the rest of the week?",
@@ -33,16 +32,11 @@
         "Is it cold outside?",
         "Is it hot outside?",
 
-        "Is it sunny outside?",
-        "Is it cloudy outside?",
-
-        "Will it be rainy tomorrow?",
         "Will it rain today?",
         "When it will rain in Delhi?",
         "Is there any possibility of rain in Delhi?",
         "Is it raining now?",
         "Is there any chance of rain today?",
-        "Will it be rainy tomorrow?"
     ],
     "macros": [
         {
