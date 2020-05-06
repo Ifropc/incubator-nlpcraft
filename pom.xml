@@ -23,7 +23,7 @@
     <name>NLPCraft</name>
     <artifactId>nlpcraft</artifactId>
     <groupId>org.apache.nlpcraft</groupId>
-    <version>0.5.0</version>
+    <version>0.5.0-SNAPSHOT</version>
     <url>https://nlpcraft.apache.org</url>
     <description>An open source API to convert natural language into actions.</description>
 
@@ -48,17 +48,6 @@
             <comments>A business-friendly OSS license</comments>
         </license>
     </licenses>
-
-    <distributionManagement>
-        <snapshotRepository>
-            <id>ossrh</id>
-            <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-        </snapshotRepository>
-        <repository>
-            <id>ossrh</id>
-            <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
-        </repository>
-    </distributionManagement>
 
     <scm>
         <url>https://github.com/apache/incubator-nlpcraft.git</url>
@@ -835,6 +824,24 @@ JDK version should be 1.8
                                 <phase>verify</phase>
                                 <goals>
                                     <goal>check</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>${maven.gpg.plugin.ver}</version>
+                        <configuration>
+                            <keyname>${gpg.keyname}</keyname>
+                            <passphrase>${gpg.passphrase}</passphrase>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
                                 </goals>
                             </execution>
                         </executions>
