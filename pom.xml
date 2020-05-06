@@ -27,6 +27,12 @@
     <url>https://nlpcraft.apache.org</url>
     <description>An open source API to convert natural language into actions.</description>
 
+    <parent>
+        <groupId>org.apache</groupId>
+        <artifactId>apache</artifactId>
+        <version>10</version>
+    </parent>
+
     <developers>
         <developer>
             <id>aradzinski</id>
