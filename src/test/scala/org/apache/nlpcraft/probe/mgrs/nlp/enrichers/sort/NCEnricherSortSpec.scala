@@ -50,40 +50,40 @@ class NCEnricherSortSpec extends NCEnricherBaseSpec {
                 usr(text = "A", id = "A")
             ),
             _ ⇒ checkExists(
-                "sort A, C by A, C",
-                srt(text = "sort", subjNotes = Seq("A", "C"), subjIndexes = Seq(1, 3), byNotes = Seq("A", "C"), byIndexes = Seq(5, 7)),
+                "sort A, C by X, Y",
+                srt(text = "sort", subjNotes = Seq("A", "C"), subjIndexes = Seq(1, 3), byNotes = Seq("X", "Y"), byIndexes = Seq(5, 7)),
                 usr(text = "A", id = "A"),
                 nlp(text = ",", isStop = true),
                 usr(text = "C", id = "C"),
                 nlp(text = "by", isStop = true),
-                usr(text = "A", id = "A"),
+                usr(text = "X", id = "X"),
                 nlp(text = ",", isStop = true),
-                usr(text = "C", id = "C")
+                usr(text = "Y", id = "Y")
             ),
             _ ⇒ checkExists(
-                "sort A C by A C",
-                srt(text = "sort", subjNotes = Seq("A", "C"), subjIndexes = Seq(1, 2), byNotes = Seq("A", "C"), byIndexes = Seq(4, 5)),
+                "sort A C by X Y",
+                srt(text = "sort", subjNotes = Seq("A", "C"), subjIndexes = Seq(1, 2), byNotes = Seq("X", "Y"), byIndexes = Seq(4, 5)),
                 usr(text = "A", id = "A"),
                 usr(text = "C", id = "C"),
                 nlp(text = "by", isStop = true),
-                usr(text = "A", id = "A"),
-                usr(text = "C", id = "C")
+                usr(text = "X", id = "Y"),
+                usr(text = "Y", id = "Y")
             ),
             _ ⇒ checkExists(
-                "sort A B by A B",
-                srt(text = "sort", subjNotes = Seq("A", "B"), subjIndexes = Seq(1, 2), byNotes = Seq("A", "B"), byIndexes = Seq(4, 5)),
+                "sort A B by X Y",
+                srt(text = "sort", subjNotes = Seq("A", "B"), subjIndexes = Seq(1, 2), byNotes = Seq("X", "Y"), byIndexes = Seq(4, 5)),
                 usr(text = "A", id = "A"),
                 usr(text = "B", id = "B"),
                 nlp(text = "by", isStop = true),
-                usr(text = "A", id = "A"),
-                usr(text = "B", id = "B")
+                usr(text = "X", id = "X"),
+                usr(text = "Y", id = "Y")
             ),
             _ ⇒ checkExists(
-                "sort A B by A B",
-                srt(text = "sort", subjNote = "AB", subjIndex = 1, byNote = "AB", byIndex = 3),
+                "sort A B by X Y",
+                srt(text = "sort", subjNote = "AB", subjIndex = 1, byNote = "XY", byIndex = 3),
                 usr(text = "A B", id = "AB"),
                 nlp(text = "by", isStop = true),
-                usr(text = "A B", id = "AB")
+                usr(text = "X Y", id = "XY")
             ),
             _ ⇒ checkExists(
                 "A classify",
